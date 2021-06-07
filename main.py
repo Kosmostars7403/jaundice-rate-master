@@ -1,4 +1,7 @@
+import logging
+from contextlib import contextmanager
 from enum import Enum
+import time
 
 import aiohttp
 import asyncio
@@ -33,6 +36,16 @@ class ProcessingStatus(Enum):
     TIMEOUT = 'TIMEOUT'
 
 
+@contextmanager
+def runtime_measurement(*args, **kwds):
+    start_time = time.monotonic()
+    try:
+        yield
+    finally:
+        end_time = time.monotonic()
+        logging.info(f'Анализ закончен за {end_time - start_time} сек')
+
+
 def load_charged_dict():
     with open('charged_dict/negative_words.txt', 'r') as negative_words,\
          open('charged_dict/positive_words.txt', 'r') as positive_words:
@@ -64,8 +77,8 @@ async def process_article(session, morph, charged_words, url, analyze_results):
         title = article_soup.find('title').string
 
         article_text = sanitize(html, plaintext=True)
-
-        splited_text = split_by_words(morph, article_text)
+        with runtime_measurement():
+            splited_text = await split_by_words(morph, article_text)
         words_amount = len(splited_text)
 
         jaundice_rating = calculate_jaundice_rate(splited_text, charged_words)
@@ -102,6 +115,7 @@ async def main(morph, charged_dict):
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     morph = pymorphy2.MorphAnalyzer()
 
     charged_dict = load_charged_dict()
