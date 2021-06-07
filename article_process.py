@@ -8,9 +8,8 @@ import asyncio
 import re
 
 import pymorphy2 as pymorphy2
-from anyio import sleep, create_task_group, run
+import pytest
 from bs4 import BeautifulSoup
-from pprint import pprint
 from async_timeout import timeout
 
 import adapters
@@ -64,13 +63,13 @@ async def fetch(session, url):
         return await response.text()
 
 
-async def process_article(session, morph, charged_words, url, analyze_results):
+async def process_article(session, morph, charged_words, url, analyze_results, fetch_timeout=TIMEOUT):
     title = 'URL not exist'
     jaundice_rating = words_amount = None
     status = ProcessingStatus.OK
 
     try:
-        async with timeout(TIMEOUT):
+        async with timeout(fetch_timeout):
             html = await fetch(session, url)
 
         article_soup = BeautifulSoup(html, 'html.parser')
@@ -90,34 +89,74 @@ async def process_article(session, morph, charged_words, url, analyze_results):
         domain_pattern = r'(^http[s]:\/\/)?(?P<domain>\w+\.\w+)'
         match = re.match(domain_pattern, url)
         title = f'Статья с сайта {match.group("domain")}'
+        status = ProcessingStatus.PARSING_ERROR
 
     except asyncio.TimeoutError:
         status = ProcessingStatus.TIMEOUT
 
-    analyze_results.append({
+    analyze_result = {
         'title': title,
-        'status': status,
+        'status': status.value,
         'rating': jaundice_rating,
         'words_amount': words_amount
-    })
+    }
+
+    analyze_results.append(analyze_result)
+
+    return analyze_result
 
 
-async def main(morph, charged_dict):
-    async with aiohttp.ClientSession(trust_env=True) as session:
-
-        analyze_results = []
-
-        async with create_task_group() as tg:
-            for url in TEST_ARTICLES:
-                await tg.spawn(process_article, session, morph, charged_dict, url, analyze_results)
-
-        pprint(analyze_results)
-
-
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+@pytest.mark.asyncio
+async def test_process_article():
     morph = pymorphy2.MorphAnalyzer()
+    charged_words = load_charged_dict()
 
-    charged_dict = load_charged_dict()
+    async with aiohttp.ClientSession() as session:
+        processing_results = await process_article(
+            session=session,
+            charged_words=charged_words,
+            morph=morph,
+            url='https://inosmi.ru/politic/20200125/246700442.html',
+            analyze_results=[]
+        )
+        assert processing_results['status'] == ProcessingStatus.OK.value
 
-    asyncio.run(main(morph, charged_dict))
+        processing_results = await process_article(
+            session=session,
+            charged_words=charged_words,
+            morph=morph,
+            url='https://inosmi.ru/politic/20200125/2467002.html',
+            analyze_results=[]
+        )
+        assert processing_results['status'] == ProcessingStatus.FETCH_ERROR.value
+
+        processing_results = await process_article(
+            session=session,
+            charged_words=charged_words,
+            morph=morph,
+            url='https://youtube.com',
+            analyze_results=[]
+        )
+        assert processing_results['status'] == ProcessingStatus.PARSING_ERROR.value
+
+        processing_results = await process_article(
+            session=session,
+            charged_words=charged_words,
+            morph=morph,
+            url='https://inosmi.ru/politic/20200125/246700442.html',
+            analyze_results=[],
+            fetch_timeout=0.1
+        )
+        assert processing_results['status'] == ProcessingStatus.TIMEOUT.value
+
+        processing_results = await process_article(
+            session=session,
+            charged_words=charged_words,
+            morph=morph,
+            url='https://inosmi.ru/politic/20200125/246700442.html',
+            analyze_results=[],
+            fetch_timeout=0.1
+        )
+        assert processing_results['status'] == ProcessingStatus.TIMEOUT.value
+
+
